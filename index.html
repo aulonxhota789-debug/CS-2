@@ -112,7 +112,7 @@
   <div class="subtitle">Counter-Strike 2 • Deathmatch</div>
   <button class="play-btn" id="btn-play">▶ Enter Match</button>
   <div class="controls">
-    <b>WASD</b> Move &nbsp;|&nbsp; <b>MOUSE</b> Aim &nbsp;|&nbsp; <b>CLICK</b> Shoot &nbsp;|&nbsp; <b>1-4</b> Weapons<br>
+    <b>WASD</b> Move &nbsp;|&nbsp; <b>MOUSE</b> Aim &nbsp;|&nbsp; <b>CLICK</b> Shoot &nbsp;|&nbsp; <b>1-5</b> Weapons<br>
     <b>G</b> Grenade &nbsp;|&nbsp; <b>B</b> Buy Menu &nbsp;|&nbsp; <b>R</b> Reload &nbsp;|&nbsp; <b>TAB</b> Score<br>
     <b>SPACE</b> Jump &nbsp;|&nbsp; <b>SHIFT</b> Walk &nbsp;|&nbsp; <b>Q</b> Quick-switch
   </div>
@@ -186,45 +186,166 @@ const KILLFEED_MAX=5,SMOKE_LIFE=14;
 
 // ═══════════════ SOUND SYSTEM ═══════════════
 let audioCtx=null;
-function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)()}
-function sfx(type){
+const weaponBuffers={}; // { 'AK-47': AudioBuffer, 'MP9': AudioBuffer, ... }
+function initAudio(){
+  if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  // Preload weapon firing sounds
+  const weaponFiles={'AK-47':'ak47_fire.mp3','MP9':'mp9_fire.mp3'};
+  for(const [name,file] of Object.entries(weaponFiles)){
+    if(!weaponBuffers[name]){
+      fetch(file)
+        .then(r=>r.arrayBuffer())
+        .then(buf=>audioCtx.decodeAudioData(buf))
+        .then(decoded=>{weaponBuffers[name]=decoded})
+        .catch(()=>{/* will fall back to synth */});
+    }
+  }
+}
+// ── Background music ──
+let bgmSource=null,bgmGain=null,bgmBuffer=null,bgmStarted=false;
+function startBGM(){
+  if(!audioCtx)initAudio();
+  if(bgmStarted)return;
+  if(bgmBuffer){
+    playBGMLoop();
+  }else{
+    fetch('bgm.mp3')
+      .then(r=>r.arrayBuffer())
+      .then(buf=>audioCtx.decodeAudioData(buf))
+      .then(decoded=>{
+        bgmBuffer=decoded;
+        playBGMLoop();
+      })
+      .catch(()=>{});
+  }
+}
+function playBGMLoop(){
+  if(!bgmBuffer||bgmStarted)return;
+  bgmStarted=true;
+  bgmSource=audioCtx.createBufferSource();bgmSource.buffer=bgmBuffer;
+  bgmSource.loop=true;
+  bgmGain=audioCtx.createGain();bgmGain.gain.setValueAtTime(0.25,audioCtx.currentTime);
+  bgmSource.connect(bgmGain);bgmGain.connect(audioCtx.destination);
+  bgmSource.start();
+}
+function pauseBGM(){
+  if(bgmSource){try{bgmSource.stop()}catch(e){}bgmSource=null}
+  bgmStarted=false;
+}
+function sfx(type,wepName){
   if(!audioCtx)initAudio();
   const t=audioCtx.currentTime;
   try{
     if(type==='gunshot'){
-      const len=audioCtx.sampleRate*0.06;
+      const buf=wepName?weaponBuffers[wepName]:null;
+      if(buf){
+        // ── Play real weapon firing sample ──
+        const s=audioCtx.createBufferSource();s.buffer=buf;
+        const g=audioCtx.createGain();g.gain.setValueAtTime(0.8,t);
+        s.connect(g);g.connect(audioCtx.destination);s.start(t);
+      }else{
+        // ── Fallback: synthesized deep thump + crack ──
+        const o1=audioCtx.createOscillator();o1.type='sine';
+        o1.frequency.setValueAtTime(180,t);
+        o1.frequency.exponentialRampToValueAtTime(35,t+0.12);
+        const g1=audioCtx.createGain();g1.gain.setValueAtTime(0.45,t);
+        g1.gain.exponentialRampToValueAtTime(0.001,t+0.14);
+        o1.connect(g1);g1.connect(audioCtx.destination);o1.start(t);o1.stop(t+0.14);
+        const len=audioCtx.sampleRate*0.10;
+        const buf=audioCtx.createBuffer(1,len,audioCtx.sampleRate);
+        const d=buf.getChannelData(0);
+        for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(audioCtx.sampleRate*0.008));
+        const s=audioCtx.createBufferSource();s.buffer=buf;
+        const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.30,t);
+        g2.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+        const f=audioCtx.createBiquadFilter();f.type='highpass';
+        f.frequency.setValueAtTime(1200,t);
+        s.connect(f);f.connect(g2);g2.connect(audioCtx.destination);s.start(t);s.stop(t+0.1);
+      }
+    }else if(type==='headshot'){
+      // ── First ding ──
+      const o=audioCtx.createOscillator();o.type='sine';
+      o.frequency.setValueAtTime(2200,t);o.frequency.exponentialRampToValueAtTime(3200,t+0.04);
+      const g=audioCtx.createGain();g.gain.setValueAtTime(0.35,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+      o.connect(g);g.connect(audioCtx.destination);o.start(t);o.stop(t+0.15);
+      // ── Second higher ding ──
+      const o2=audioCtx.createOscillator();o2.type='sine';
+      o2.frequency.setValueAtTime(2800,t+0.06);o2.frequency.exponentialRampToValueAtTime(3800,t+0.1);
+      const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.25,t+0.06);g2.gain.exponentialRampToValueAtTime(0.001,t+0.2);
+      o2.connect(g2);g2.connect(audioCtx.destination);o2.start(t+0.06);o2.stop(t+0.2);
+      // ── Shell-crack impact ──
+      const o3=audioCtx.createOscillator();o3.type='sawtooth';
+      o3.frequency.setValueAtTime(600,t);o3.frequency.exponentialRampToValueAtTime(100,t+0.08);
+      const g3=audioCtx.createGain();g3.gain.setValueAtTime(0.15,t);g3.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+      o3.connect(g3);g3.connect(audioCtx.destination);o3.start(t);o3.stop(t+0.09);
+    }else if(type==='hit'){
+      // ── Body impact thud + squelch ──
+      const o1=audioCtx.createOscillator();o1.type='triangle';
+      o1.frequency.setValueAtTime(250,t);o1.frequency.exponentialRampToValueAtTime(50,t+0.07);
+      const g1=audioCtx.createGain();g1.gain.setValueAtTime(0.20,t);
+      g1.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+      o1.connect(g1);g1.connect(audioCtx.destination);o1.start(t);o1.stop(t+0.08);
+      // ── Flesh snap (short noise burst) ──
+      const len2=audioCtx.sampleRate*0.05;
+      const buf2=audioCtx.createBuffer(1,len2,audioCtx.sampleRate);
+      const d2=buf2.getChannelData(0);
+      for(let i=0;i<len2;i++)d2[i]=(Math.random()*2-1)*Math.exp(-i/(audioCtx.sampleRate*0.004));
+      const s2=audioCtx.createBufferSource();s2.buffer=buf2;
+      const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.12,t);
+      g2.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+      const f2=audioCtx.createBiquadFilter();f2.type='bandpass';
+      f2.frequency.setValueAtTime(600,t);f2.Q.setValueAtTime(0.5,t);
+      s2.connect(f2);f2.connect(g2);g2.connect(audioCtx.destination);s2.start(t);s2.stop(t+0.05);
+    }else if(type==='kill'){
+      // ── Death sting ──
+      const o1=audioCtx.createOscillator();o1.type='triangle';
+      o1.frequency.setValueAtTime(600,t);o1.frequency.exponentialRampToValueAtTime(60,t+0.30);
+      const g1=audioCtx.createGain();g1.gain.setValueAtTime(0.30,t);
+      g1.gain.exponentialRampToValueAtTime(0.001,t+0.30);
+      o1.connect(g1);g1.connect(audioCtx.destination);o1.start(t);o1.stop(t+0.30);
+      // ── Body drop thud ──
+      const o2=audioCtx.createOscillator();o2.type='sine';
+      o2.frequency.setValueAtTime(80,t+0.05);o2.frequency.exponentialRampToValueAtTime(20,t+0.25);
+      const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.20,t+0.05);
+      g2.gain.exponentialRampToValueAtTime(0.001,t+0.25);
+      o2.connect(g2);g2.connect(audioCtx.destination);o2.start(t+0.05);o2.stop(t+0.25);
+    }else if(type==='reload'){
+      // ── Magazine click out ──
+      const o1=audioCtx.createOscillator();o1.type='square';
+      o1.frequency.setValueAtTime(300,t);o1.frequency.linearRampToValueAtTime(500,t+0.08);
+      const g1=audioCtx.createGain();g1.gain.setValueAtTime(0.10,t);
+      g1.gain.linearRampToValueAtTime(0.001,t+0.10);
+      o1.connect(g1);g1.connect(audioCtx.destination);o1.start(t);o1.stop(t+0.10);
+      // ── Magazine click in ──
+      const o2=audioCtx.createOscillator();o2.type='square';
+      o2.frequency.setValueAtTime(500,t+0.25);o2.frequency.linearRampToValueAtTime(800,t+0.32);
+      const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.12,t+0.25);
+      g2.gain.linearRampToValueAtTime(0.001,t+0.35);
+      o2.connect(g2);g2.connect(audioCtx.destination);o2.start(t+0.25);o2.stop(t+0.35);
+      // ── Charging handle / bolt pull ──
+      const o3=audioCtx.createOscillator();o3.type='sawtooth';
+      o3.frequency.setValueAtTime(150,t+0.35);o3.frequency.linearRampToValueAtTime(400,t+0.55);
+      const g3=audioCtx.createGain();g3.gain.setValueAtTime(0.08,t+0.35);
+      g3.gain.linearRampToValueAtTime(0.001,t+0.6);
+      o3.connect(g3);g3.connect(audioCtx.destination);o3.start(t+0.35);o3.stop(t+0.6);
+    }else if(type==='bot_gunshot'){
+      // ── Distant gunshot (quieter, more muffled) ──
+      const o1=audioCtx.createOscillator();o1.type='sine';
+      o1.frequency.setValueAtTime(140,t);
+      o1.frequency.exponentialRampToValueAtTime(30,t+0.10);
+      const g1=audioCtx.createGain();g1.gain.setValueAtTime(0.18,t);
+      g1.gain.exponentialRampToValueAtTime(0.001,t+0.12);
+      o1.connect(g1);g1.connect(audioCtx.destination);o1.start(t);o1.stop(t+0.12);
+      const len=audioCtx.sampleRate*0.08;
       const buf=audioCtx.createBuffer(1,len,audioCtx.sampleRate);
       const d=buf.getChannelData(0);
-      for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(audioCtx.sampleRate*0.012));
+      for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(audioCtx.sampleRate*0.006));
       const s=audioCtx.createBufferSource();s.buffer=buf;
-      const g=audioCtx.createGain();g.gain.setValueAtTime(0.25,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.06);
-      const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.setValueAtTime(4000,t);
-      s.connect(f);f.connect(g);g.connect(audioCtx.destination);s.start(t);s.stop(t+0.06);
-    }else if(type==='headshot'){
-      const o=audioCtx.createOscillator();o.type='sine';
-      o.frequency.setValueAtTime(1800,t);o.frequency.exponentialRampToValueAtTime(2800,t+0.04);
-      const g=audioCtx.createGain();g.gain.setValueAtTime(0.3,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.15);
-      o.connect(g);g.connect(audioCtx.destination);o.start(t);o.stop(t+0.15);
-      // Second ding
-      const o2=audioCtx.createOscillator();o2.type='sine';
-      o2.frequency.setValueAtTime(2400,t+0.06);o2.frequency.exponentialRampToValueAtTime(3200,t+0.1);
-      const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.2,t+0.06);g2.gain.exponentialRampToValueAtTime(0.001,t+0.2);
-      o2.connect(g2);g2.connect(audioCtx.destination);o2.start(t+0.06);o2.stop(t+0.2);
-    }else if(type==='hit'){
-      const o=audioCtx.createOscillator();o.type='square';
-      o.frequency.setValueAtTime(800,t);
-      const g=audioCtx.createGain();g.gain.setValueAtTime(0.08,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.04);
-      o.connect(g);g.connect(audioCtx.destination);o.start(t);o.stop(t+0.04);
-    }else if(type==='kill'){
-      const o=audioCtx.createOscillator();o.type='triangle';
-      o.frequency.setValueAtTime(500,t);o.frequency.exponentialRampToValueAtTime(80,t+0.25);
-      const g=audioCtx.createGain();g.gain.setValueAtTime(0.25,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.25);
-      o.connect(g);g.connect(audioCtx.destination);o.start(t);o.stop(t+0.25);
-    }else if(type==='reload'){
-      const o=audioCtx.createOscillator();o.type='sawtooth';
-      o.frequency.setValueAtTime(200,t);o.frequency.linearRampToValueAtTime(600,t+0.15);
-      const g=audioCtx.createGain();g.gain.setValueAtTime(0.06,t);g.gain.linearRampToValueAtTime(0.001,t+0.2);
-      o.connect(g);g.connect(audioCtx.destination);o.start(t);o.stop(t+0.2);
+      const g2=audioCtx.createGain();g2.gain.setValueAtTime(0.12,t);
+      g2.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+      const f2=audioCtx.createBiquadFilter();f2.type='lowpass';
+      f2.frequency.setValueAtTime(2000,t);
+      s.connect(f2);f2.connect(g2);g2.connect(audioCtx.destination);s.start(t);s.stop(t+0.08);
     }
   }catch(e){/* audio init may need user gesture */}
 }
@@ -233,6 +354,7 @@ function sfx(type){
 const WEP_DB=[
   {n:'AK-47',dmg:36,hs:4,rpm:600,mag:30,res:90,rld:2.5,recoilY:0.035,recoilX:0.014,spread:0.007,spr:0.85,auto:1,bolt:0,price:2700,color:0x5c3a1e,barrel:1.2},
   {n:'M4A1-S',dmg:33,hs:4,rpm:666,mag:25,res:75,rld:3.0,recoilY:0.026,recoilX:0.010,spread:0.005,spr:0.90,auto:1,bolt:0,price:3100,color:0x2a2a2a,barrel:1.0},
+  {n:'MP9',dmg:26,hs:3.5,rpm:857,mag:30,res:120,rld:2.1,recoilY:0.018,recoilX:0.016,spread:0.014,spr:0.78,auto:1,bolt:0,price:1250,color:0x333338,barrel:0.6},
   {n:'AWP',dmg:115,hs:4.5,rpm:41,mag:10,res:30,rld:3.7,recoilY:0.13,recoilX:0.05,spread:0.001,spr:0.65,auto:0,bolt:1,price:4750,color:0x4a5d23,barrel:1.8},
   {n:'Deagle',dmg:53,hs:3.8,rpm:267,mag:7,res:35,rld:2.2,recoilY:0.08,recoilX:0.03,spread:0.014,spr:0.76,auto:0,bolt:0,price:700,color:0xb8b8b8,barrel:0.5},
 ];
@@ -515,7 +637,7 @@ const player={
 // ═══════════════ INPUT ═══════════════
 const keys={};const mouse={left:false,right:false};
 document.addEventListener('keydown',e=>{keys[e.code]=true;
-  if(e.code>='Digit1'&&e.code<='Digit4')switchWep(parseInt(e.code[5])-1);
+  if(e.code>='Digit1'&&e.code<='Digit5')switchWep(parseInt(e.code[5])-1);
   if(e.code==='KeyR'&&!player.reloading&&player.alive)startReload();
   if(e.code==='Tab'){e.preventDefault();showScoreboard()}
   if(e.code==='KeyB'&&player.alive)showBuyMenu();
@@ -530,7 +652,7 @@ document.addEventListener('mouseup',e=>{if(e.button===0){mouse.left=false;if(pla
 // ═══════════════ WEAPON LOGIC ═══════════════
 function switchWep(idx){if(idx===player.curWep||player.reloading)return;gunGroup.remove(curGun);player.lastWeapon=player.curWep;player.curWep=idx;curGun=gunModels[idx];gunGroup.add(curGun);player.recoilA=0;player.spread=0;player.curNade=null;updateHUD()}
 function quickSwitch(){if(player.lastWeapon!==player.curWep&&player.lastWeapon<WEP_DB.length)switchWep(player.lastWeapon)}
-function startReload(){const w=player.weapons[player.curWep];if(w.ammo===w.mag||w.resv<=0)return;player.reloading=true;player.reloadT=w.rld}
+function startReload(){const w=player.weapons[player.curWep];if(w.ammo===w.mag||w.resv<=0)return;player.reloading=true;player.reloadT=w.rld;sfx('reload')}
 function doneReload(){const w=player.weapons[player.curWep];const need=w.mag-w.ammo;const avail=Math.min(need,w.resv);w.ammo+=avail;w.resv-=avail;player.reloading=false;updateHUD()}
 function cycleNade(){
   const types=['flash','smoke','he'];const ci=types.indexOf(player.curNade);
@@ -619,7 +741,7 @@ function shoot(){
   player.recoilA+=def.recoilY+Math.abs(rx)*0.5;player.spread+=1-def.spr;
   gunGroup.rotation.x=player.recoilA*3;gunGroup.position.z=-0.8-player.recoilA*5;
   muzzleFlash();
-  sfx('gunshot'); // gunshot sound
+  sfx('gunshot',def.n); // weapon-specific gunshot sound
   const spread=def.spread+player.spread*0.02;
   const dir=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   dir.x+=(Math.random()-0.5)*spread*2;dir.y+=(Math.random()-0.5)*spread*2;dir.z+=(Math.random()-0.5)*spread*2;dir.normalize();
@@ -769,9 +891,9 @@ class Bot{
     const ph=new THREE.Vector3(ppos.x,CAM_H,ppos.z);const pb=new THREE.Vector3(ppos.x,1.0,ppos.z);
     const th=ph.clone().sub(new THREE.Vector3(bp.x,1.2,bp.z));const tb=pb.clone().sub(new THREE.Vector3(bp.x,1.2,bp.z));
     const hd=th.clone().cross(d).length();const bd=tb.clone().cross(d).length();
-    const muzzle=new THREE.Vector3(bp.x,1.3,bp.z);spawnParticles(muzzle,0xffaa00,2,2,0.1);
-    if(hd<0.25&&th.dot(d)>0&&th.dot(d)<dist+1){const dmg=Math.round(15*2*(player.armor>0?0.5:1));player.hp-=dmg;showDmgFlash();if(player.hp<=0)killPlayer(this.name)}
-    else if(bd<0.45&&tb.dot(d)>0&&tb.dot(d)<dist+1){const dmg=Math.round(10*(player.armor>0?0.5:1));player.hp-=dmg;showDmgFlash();if(player.hp<=0)killPlayer(this.name)}
+    const muzzle=new THREE.Vector3(bp.x,1.3,bp.z);spawnParticles(muzzle,0xffaa00,2,2,0.1);sfx('bot_gunshot');
+    if(hd<0.25&&th.dot(d)>0&&th.dot(d)<dist+1){const dmg=Math.round(15*2*(player.armor>0?0.5:1));player.hp-=dmg;showDmgFlash();sfx('hit');if(player.hp<=0)killPlayer(this.name)}
+    else if(bd<0.45&&tb.dot(d)>0&&tb.dot(d)<dist+1){const dmg=Math.round(10*(player.armor>0?0.5:1));player.hp-=dmg;showDmgFlash();sfx('hit');if(player.hp<=0)killPlayer(this.name)}
     updateHUD();
   }
   respawn(){this.alive=true;this.hp=100;this.group.visible=true;const sp=spawns[Math.floor(Math.random()*spawns.length)];this.group.position.set(sp.x,0,sp.z);this.state='patrol';this.pi=0}
@@ -881,6 +1003,7 @@ controls.addEventListener('lock',()=>{
   document.getElementById('crosshair').classList.remove('hidden');
   document.getElementById('killfeed').classList.remove('hidden');
   renderer.domElement.style.pointerEvents='auto';
+  startBGM();
 });
 controls.addEventListener('unlock',()=>{
   document.getElementById('overlay').classList.remove('hidden');
@@ -892,6 +1015,7 @@ controls.addEventListener('unlock',()=>{
   document.getElementById('death').classList.remove('visible');
   document.getElementById('buy-menu').classList.remove('visible');
   renderer.domElement.style.pointerEvents='none';
+  pauseBGM();
 });
 document.getElementById('btn-play').addEventListener('click',()=>controls.lock());
 
